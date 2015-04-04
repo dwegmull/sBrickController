@@ -1,0 +1,10 @@
+Commands:
+gattc open 0 0
+connect 000007802E2CCD 4000 90000 120000 2000000 (Connect to sBrick)
+gattc write 26 0D00 'Disable watchdog (for dev only)
+gattc write 26 0100ddss01ddss02ddss03ddss
+
+
+Code notes:
+Autocalibrate the sticks
+Action buttons toggle axes inversion
