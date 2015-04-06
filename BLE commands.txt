@@ -1,10 +1,30 @@
 Commands:
-gattc open 0 0
+gattc open 0 0 --> BleGattcOpen(0, 0)
 connect 000007802E2CCD 4000 90000 120000 2000000 (Connect to sBrick)
+  --> BleConnect("000007802E2CCD",4000,90000,120000,2000000)
 gattc write 26 0D00 'Disable watchdog (for dev only)
+  --> BleGattcWrite(hc[0],0x0D00,0x26)
 gattc write 26 0100ddss01ddss02ddss03ddss
 
 
 Code notes:
 Autocalibrate the sticks
 Action buttons toggle axes inversion
+
+1mS timer:
+  if connected
+    sample 4 ADCs
+    calibrate
+    sample buttons
+    if transition
+      update inversion
+    apply inversion
+    if axis change from old
+      send data packet
+      save axes values as old
+    if watchdog timer expired
+      send data packet
+    run watchdog timer
+  else
+    try to connect
+    
