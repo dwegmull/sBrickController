@@ -93,8 +93,9 @@ FUNCTION HandlerTimer0()
     atHndl = 26
     rc=BleGattcWrite(conHndl,atHndl,at$)
     if connected == 1 then
-        TimerStart(0,500,1)
+        TimerStart(0,400,1)
         rc = 1
+        WAITEVENT
     else
         rc = 0
     endif
@@ -109,32 +110,32 @@ ONEVENT EVBLE_CONN_TIMEOUT CALL HndlrConnTO
 ONEVENT EVTMR0 CALL HandlerTimer0
 
 // Keep us alive
-gpiosetfunc(SYS_ON,2,1)
+rc = GpioSetFunc(SYS_ON,2,1)
 gpiowrite(SYS_ON, 1)
 
 // Turn on the LED for a bit
-gpiosetfunc(LED_PIN,2,0)
+rc = GpioSetFunc(LED_PIN,2,0)
 gpiowrite(LED_PIN, 0)
 
 // Configure the analogue inputs
-GpioSetFunc(ADC_V_BATT, 3, 0)
-GpioSetFunc(ADC_LX, 3, 0)
-GpioSetFunc(ADC_LY, 3, 0)
-GpioSetFunc(ADC_RX, 3, 0)
-GpioSetFunc(ADC_RY, 3, 0)
+rc = GpioSetFunc(ADC_V_BATT, 3, 0)
+rc = GpioSetFunc(ADC_LX, 3, 0)
+rc = GpioSetFunc(ADC_LY, 3, 0)
+rc = GpioSetFunc(ADC_RX, 3, 0)
+rc = GpioSetFunc(ADC_RY, 3, 0)
 
 // Wakeup pin (Input with pull up + wakeup from deep sleep)
-GpioSetFunc(SWITCH_WAKEUP,1,0x12)
+rc = GpioSetFunc(SWITCH_WAKEUP,1,0x12)
 
 // Configure the other buttons (input with pull up)
-GpioSetFunc(SWITCH_DIR_LX,1,2)
-GpioSetFunc(SWITCH_DIR_LY,1,2)
-GpioSetFunc(SWITCH_DIR_RX,1,2)
-GpioSetFunc(SWITCH_DIR_RY,1,2)
+rc = GpioSetFunc(SWITCH_DIR_LX,1,2)
+rc = GpioSetFunc(SWITCH_DIR_LY,1,2)
+rc = GpioSetFunc(SWITCH_DIR_RX,1,2)
+rc = GpioSetFunc(SWITCH_DIR_RY,1,2)
 
 // Init global variables
 pwm = 0
-connected = 0
+connected = 1
 IF OnStartup()==0 THEN
     PRINT "\nGatt Client is open\n"
 ELSE
