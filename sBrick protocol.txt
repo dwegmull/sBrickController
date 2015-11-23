@@ -1,0 +1,636 @@
+The SBrick Protocol 4.2b2
+=========================
+
+
+The advertisement data
+----------------------
+
+The advertisement data contains the full device name, and some
+manufacturer specific data. The latter contains security and battery
+voltage information, and is available in the "scan response" packets
+in response to active scanning.
+
+Vengit Limited manufacture specific data fields
+-----------------------------------------------
+
+We use manufacturer specific data in AD to advertise product type,
+battery reading and other data currently not in the Bluetooth
+specification.
+
+The manufacturer specific data starts with a length octet, that
+describes the whole length of this field. After the length octet, the
+company identifier for Vengit limited follows in little endian order.
+After these four bytes, the actual data payload follows.
+
+< LENGTH >   < DATA PAYLOAD >
+
+The manufacturer specific data records can be read as:
+
+ < Data >
+
+Every record begins with a length octet, and a record identifier octet
+that determines the type of the record.
+
+The manufacturer specific data field may be present in both
+advertisement data, and scan response data packets, even at the same
+time.
+
+Vengit Limited manufacturer specific data records:
+
+00 Product type
+    00   
+        00 - SBrick
+    Example 1: 02 00 00 - Product SBrick
+    Example 2: 06 00 00 04 00 04 01 - Product SBrick, HW 4.0, FW 4.1
+
+01 BlueGiga ADC sensor raw reading
+    01  
+    Example, battery reading '12f0' on SBrick: 04 01 00 12 F0
+    Example, temperature reading '12f0': 04 01 0e 12 F0
+
+02 Device Identifier
+    02 < Device identifier string >
+    Example, SBrick device ID: 07 02 0D 23 FC 19 87 63
+
+03 Simple Security status
+    05 < status code >
+    00: Freely accessible
+    01: Authentication needed for some functions
+
+Example manufacturer specific data for SBrick, containing device ID with
+hw/sw revision, with battery readings and device ID:
+
+1A FF 01 98 06 00 00 04 00 04 02 04 01 0E 12 f0 07 02 0D 23 FC 19 87 63
+02 03 00
+
+The GATT database
+-----------------
+
+The following service and characteristics are accessible:
+
+ 1. Generic GAP service
+ 2. Device information service
+ 5. OTA service
+ 6. Remote control service
+
+
+Generic GAP service - 1800
+--------------------------
+
+Only contains the device name and appeareance characteristics.
+The device name (2a00) is always "SBrick", and the appeareance (2a01) is
+always 0384 a.k.a. "generic remote control", according to the Bluetooth
+Specification.
+
+Device information - 180a
+-------------------------
+
+Contains mandatory device information fields.
+
+Model number string - 00: "SBrick". Same as the "Product type" above.
+
+Firmware revision string 
+Hardware revision string
+Software revision string
+    These are version information strings. The "firmware" and "software"
+    revision string are always the same.
+
+    The revision string consist of a major and a minor revision,
+    separated by a dot. (Example: 4.1 - Major is 4, minor is 1.)
+
+    A firmware is ONLY compatible with a hardware, if their MAJOR
+    REVISION NUMBER IS EXACTLY THE SAME.
+
+Manufacturer string - "Vengit Ltd."
+
+OTA service - 1d14d6ee-fd63-4fa1-bfa4-8f47b42119f0
+--------------------------------------------------
+
+The OTA service is compatible with BlueGiga's OTA solution, one can
+use BLEGui to upload a new firmware.
+
+
+OTA control - f7bf3564-fb6d-4e53-88a4-5e37e0326063
+--------------------------------------------------
+
+This characteristic can be used to send OTA-specific commands:
+
+02 Reset DFU pointer
+    Resets the DFU flash pointer to zero. Can be used when reading back
+    firmware image. This is only useful for debugging / testing
+    purposes.
+
+03 Reboot into DFU mode
+    After successfully transmitting the firmware image, the device can
+    be booted into DFU mode with this command. In this mode, the device
+    checks the flash memory for a firmware image, and calculates the
+    checksum. If the checksum is correct, the firmware image is
+    transferred into the program memory. This procedure takes
+    approximately five seconds. After this, the firmware clears up the
+    user flash. During flash clearing, the ID LED blinks quickly for
+    about one and a half seconds.
+
+The characteristic can also be read. The value read back is the DFU
+pointer, or the number of bytes written into flash. The application
+might want to check the DFU pointer, and compare it with the firmware
+size. If the thow sizes are different, the deivce MUST be restarted
+with the "0x12 Reboot" command, and the user must be informed about
+the failure. The user flash is cleared upon reboot, and the firmware
+upload can be attempted again.
+
+
+OTA data - 984227f3-34fc-4045-a5d0-2c581f81a153
+-----------------------------------------------
+
+This characteristic can be used to transfer the firmware image in 20
+byte packages.
+
+After successfully uploading the firmware, the application MUST issue
+a command "0x03 Reboot into DFU mode" on the control characteristic
+to restart the device into DFU mode.
+
+This characteristic can also be read to check the written firmare, or
+blank-check the flash. One must reset the DFU pointer with comman 0x02
+on the control characteristic before attempting  a readback. This
+feature is probably not that useful fin normal circumstances, as it was
+developed to aid development / debugging.
+
+
+Remote control service - 4dc591b0-857c-41de-b5f1-15abda665b0c
+-------------------------------------------------------------
+
+This service contains two characteristics:
+
+* Quick Drive: allows remote control with small data packets. Very
+  limited functionality.
+* Remote control commands: allows full control, more verbose and slower
+  than quick drive.
+
+The Quick Drive characteristic should be used in situations where
+multiple channels must be updated quickly. It uses less bandwidth
+than issueing commands at the Remote control commands characteristic.
+
+The Remove control commands characteristic allows full control over
+SBrick.
+
+Remote control commands - 2b8cbcc-0e25-4bda-8790-a15f53e6010f
+-------------------------------------------------------------
+
+Commands can be issued by writing data to this characteristic. A command
+always starts with the command identifier byte, after wich parameters
+may follow. A single BLE write operation can only send a single command.
+
+Certain commands can return a value. The returned value can be read
+from the characteristic. The central can also subscribe to notifications
+on this characteristic, so renturn values will be sent promptly when
+available.
+
+Commands with no return values will issue no notification, and the
+characteristic value will not change.
+
+The "OWNER" note means that the operation require owner privileges.
+
+All commands might throw exceptions. These exceptions manifest themselves
+as BLE level errors, with error codes in the user-defined error range.
+
+The possible exceptions are the following:
+
+0x80 ERROR_LENGTH  Invalid command length
+0x81 ERROR_PARAM   Invalid parameter
+0x82 ERROR_COMMAND No such command
+0x83 ERROR_NOAUTH  No authentication needed
+0x84 ERROR_AUTH    Authentication error
+0x85 ERROR_DOAUTH  Authentication needed
+0x86 ERROR_AUTHOR  Authorization error
+0x87 ERROR_THERMAL Thermal protection is active
+0x88 ERROR_STATE   The system is in a state where the command does not make sense
+
+The possible commands are following.
+
+00 Break
+    00 < channel1 > < channel2 > ...
+    At least one, at most four channels can be given
+    (The default is all channels are freewheeling)
+
+    Return: -
+
+
+01 Drive
+    01 < channel1 > < direction1 > < power1 > ...
+    (The default is all channels are freewheeling)
+
+    Return: -
+
+
+02 Need authentication?
+    02
+    If owner password is set, this will return true.
+
+    This exact information is reflected in the "simple security"
+    field in manufacturer specific data.
+
+    Return:
+        00 - Authentication not needed
+        01 - Authentication needed
+
+
+03 Is authenticated?
+    03
+    Returns wether the current session is authenticated. This will always
+    return true, if there's no owner password set.
+
+    Return:
+        00 - Not authenticated
+        01 - Authenticated
+
+
+04 Get user ID
+    04
+    Returns the authenticated user ID. If the user is not authenticated,
+    then a BLE error is returned.
+
+    Return: User ID if authenticated. 
+
+
+05 Authenticate
+    05  
+    New sessions are unauthenticated if password set.
+    New sessions are authenticated if password is not set.
+
+    Return: -
+
+
+06 Clear password (OWNER)
+    06 00: clears owner password. This will "open" SBrick, anyone
+        connecting will get owner rights. Guest password will also
+        be cleared.
+
+    06 01: clear only guest password, rendering guests unable to
+           authenticate.
+
+    Return: -
+
+
+07 Set password (OWNER)
+    07 < User ID > : set the password
+
+    00: owner
+    01: guest
+
+    Guest password can only be set if there is a password set for the
+    owner too (e.g. "need authentication?" returns 1)
+
+    Return: -
+
+
+08 Set authentication timeout (OWNER)
+    08 
+
+    Sets the authentication timeout. This value is saved to the
+    persistent store, and loaded at boot time.
+
+    Return: -
+
+
+09 Get authentication timeout (OWNER)
+    09
+
+    Return: 
+
+
+0A Get brick ID
+    0A
+
+    Return: < BRICK ID, 6 byte BlueGiga ID >
+
+
+0B  Quick Drive Setup
+    0B < channel-number1 > < channel-number2 >
+    At least one, at most five channels can be given.
+    Default: First five channels adcending order
+
+    Return: -
+
+0C  Read Quick Drive Setup
+    0C
+    Return: 
+
+
+0D Set watchdog timeout
+    0D < timeout in 0.1 secs, 1 byte >
+
+    The purpose of the watchdog is to stop driving in case of an
+    application failure.
+
+    Watchdog starts when the first DRIVE command is issued during a
+    connection.
+
+    Watchdog is stopped when all channels are either set to zero drive,
+    or are braking.
+
+    The value is saved to the persistent store.
+
+    The recommended watchdog frequency is 0.2-0.5 seconds, but a smaller
+    and many larger settings are also available.
+
+    Writing a zero disables the watchdog.
+
+    By default watchdog is set to 5, which means a 0.5 second timeout.
+
+    Return: -
+
+0E Get watchdog timeout
+    0E
+    Return: < 1 byte watchdog timeout >
+
+
+0F Query ADC
+    0F < ADC channel ID, 00 or 0e >
+
+    The ADC channels are read at every 2 seconds. These values are stored
+    in variables, and this query simply reads those variables. Because of
+    this, ADC data can be up to 2 seconds old.
+
+    Temperature can be read on channel 0x0E, voltage on 0x00.
+
+    Return:
+        2 byte, little endian, 12 bit resolution ADC reading on given channel.
+        Value is stored MSB. (Must be divided by 16)
+
+        All ADC channels are using the internal 1.24V reference.
+
+        The PSU voltage is dropped through a 10:1 voltage divider.
+        VPSU = ADC / 16 * 1.24 / 2047 
+
+        Temperature can be calculated as: celsius = (ADC / 16 * 1240 / 2047) * 10/45 - 160
+        Where 160 is an offset
+
+10 Send event
+    10 < event ID >
+    Events can be used to trigger patterns.
+    Event range: 0-31. Events 0-15 are reserved for system use.
+
+    Special events:
+    0: Boot. Program starts 5 seconds after boot.
+    1: Connection established
+    2: Disconnected
+
+    16-31: User events
+
+
+11 Erase user flash on next reboot (compromises OTA!)
+    11
+    Return: -
+
+
+12 Reboot
+    12
+
+    After issueing this command, the remote device will gracefully
+    terminate the connection, and reboot in normal (non-DFU) mode.
+
+    To reboot in DFU mode and possibly update firmware, use the OTA
+    service.
+
+    Return: -
+
+
+13 Break with PWM support
+    13 < channel1 > < power1 > < channel2 > < power2 > ...
+    (The default is all channels are freewheeling)
+    Return: -
+
+14 Set thermal limit
+    14 
+
+    Sets the thermal protection limit.
+
+    Return: -
+
+15 Read thermal limit
+    15
+    Return: 2byte, the raw ADC value set for thermal limit
+
+16 Write program
+    16  < data >
+
+    BIN       MASK HEX  COMMAND
+    =============================
+    00000rrr  $F8  $00  DBRAKE reg(0-7, pwm, reg+1: ch)
+    000010cc  $FC  $08  BRAKE ch
+    000011cc  $FC  $0C  BRAKEPWM ch pwm
+    00010rrr  $F8  $10  DDRIVE reg(0-7, pwm, reg+1: d:1, ch:3)
+    00011dcc  $F8  $18  DRIVE ch d pwm
+    00100rrr  $F8  $20  DWAIT reg(0-7, reg+1)
+    00101ttt  $F8  $28  WAIT t(0-2047, 3+8 bits)
+    00110rrr  $F8  $30  DSETPWM reg(0-7, pwmh, reg+1: pwml)
+    00111000  $FF  $38  SETPWM pwm(0-65535, big endian)
+    00111001  $FF  $39  PUSHC value(0-255)
+    0011101a  $FE  $3A  CALL addr(0-511)
+    00111100  $FF  $3C  RET
+    00111101  $FF  $3D  NOP
+    0011111a  $FE  $3E  JMP addr(0-511)
+    01000rrr  $F8  $40  PUSH reg(0-7)
+    01001rrr  $F8  $48  POP reg(0-7)
+    01010rrr  $F8  $50  MOVSL reg(0-7) reg(0-15) -> Move direction ->
+    01011rrr  $F8  $58  MOVLS reg(0-15) reg(0-7) -> Move direction ->
+    01100bba  $F8  $60  JUMPIF b(0-3 bit of the STATUS register) addr(0-511)
+    01101bba  $F8  $68  JUMPIFN b(0-3 bit of the STATUS register) addr(0-511)
+    01110rrr  $F8  $70  INC reg(0-7)
+    01111rrr  $F8  $78  DEC reg(0-7)
+    10000rrr  $F8  $80  ADD reg(0-7)
+    10001rrr  $F8  $88  SUB reg(0-7) - The accumulator is decremented
+    10010rrr  $F8  $90  MUL reg(0-7)
+    10011rrr  $F8  $98  DIV reg(0-7) - The accumulator is divided. Can overflow, mod can still be used
+    10100rrr  $F8  $A0  AND reg(0-7)
+    10101rrr  $F8  $A8  OR  reg(0-7)
+    10110rrr  $F8  $B0  XOR reg(0-7)
+    10111rrr  $F8  $B8  SHL reg(0-7)
+    11000rrr  $F8  $C0  SHR reg(0-7)
+    11001rrr  $F8  $C8  LOAD reg(0-7) value(0-255)
+    11010000  $FF  $D0  DEBUG - Send regs:pc and stack:sp in a notification on the command characteristic
+    11010001  $FF  $D1  RESET - Clears all registers and the stack. PC advances as usual.
+    11111111  $FF  $FF  STOP
+
+    - There are 16 registers
+    - Registers have 8-bit values
+    - The lower 8 registers are addressable with 1-byte commands
+
+    Special registers:
+    ACC,    0x00: accumulator, arithmetic commands put their values there
+    ACCH,   0x01: in case of mul and div, the MSB and the remainder are put here
+    STATUS, 0x0F: has CARRY (or borrow), OVERFLOW, ZERO, SIGN bits (0-3)
+
+    Example:
+    16 0000 1860 2809 1C60 2809 3E00
+    - Write program to address 0
+        DRIVE 0 0 0x60
+        WAIT 1.0s
+        DRIVE 0 1 0x60
+        WAIT 1.0s
+        JMP 0
+
+    Dynamic braking (using regs 1 and 2):
+    16 0000 1860 2809 C9FF CA00 01 2809 3E00
+
+    ...on channel 1:
+    16 0000 1960 2809 C9FF CA01 01 2809 3E00
+
+    Load once, use in loop ddrive&brake (regs 0-2):
+    16 0000 C8FF C900 CA00 CB09 10 22 00 22 3E08
+
+    Use dynamic PWM
+    16 0000 C877 C972 CA3B CBB9 1810 30 2804 32 2804
+    16 1000 3E0A
+
+    More complex program to demonstrate PWM frequency change capabilities
+    by playing a nice tune ;)
+
+    160000182338EEE4280638BD9B280638EEE42806
+    16110038BD9B2806389F71280B18002801182338
+    1622009F71280A18002801182338EEE4280638BD
+    1633009B280638EEE4280638BD9B2806389F7128
+    1644000B180028011823389F71280A1800280118
+    165500103877722806387E8C2806388E0C280638
+    1666009F71280638B2F7280B180028011823388E
+    1677000C280A180028011823389F71280638B2F7
+    168800280638BD9B280638D4D3280638EEE4280B
+    16990018002801182338EEE4280B1800FF
+
+    Imperial march
+
+    160001389F711827280618002800182728061800
+    1611012800182728061800280038D4D418272805
+    1622013886132802389F7128061800280038D4D4
+    163301182728053886132802389F712807180028
+    16440106386A6A18272806180028001827280618
+    1655010028001827280618002800386471182728
+    16660105388613280238A8EC28061800280038D4
+    167701D4182728053886132802389F7128071800
+    168801FF
+
+    enjoy ;)
+
+17 Read program
+    17  
+    The offset + data length must be at most 512.
+    Data length must be at most 22 bytes.
+    Return: < data >
+
+18 Save program
+    18
+
+    Saves the current program to the upper half of the first flash page,
+    after erasing the whole page.
+
+    Interferes with OTA.
+
+    Return: -
+
+19 Erase program
+    19
+
+    Erases the first user flash page. The command buffer will remain
+    unaffected.
+
+    Return: -
+
+1A Set event
+    1A  
+
+    Sets a program memory address for an event in the event table.
+
+    Return: -
+
+1B Read event
+    1B 
+
+    Reads an address from the event table
+
+    Return: 
+
+1C Save events
+    1C
+    Saves the event table onto the flash
+
+1D Start program
+    1D 
+    Start program at given address
+
+1E Stop program
+    1E
+    Stops the currently running program
+
+1F Set PWM counter value
+    1F 
+    Sets the PWM  counter value by writing into the TIMER1 control registers.
+    Certain TIMER1 register values are also recalculated to keep the PWM
+    duty cycle as constant across changes as possible.
+
+    The default PWM value is 
+
+20 Get PWM counter value
+    20
+    Returns the 2 byte TIMER1 T1CC0H/L value.
+    Return 
+
+21 Save PWM counter value
+    21
+    Saves PWM counter value to flash
+
+22 Get channel status
+    22
+    Returns the current drive level of a channel
+    Return < brake status bits, 1 byte, 1:brake on, 0: brake off >  
+
+23 Is guest password set (OWNER)
+    23
+    Return: 1 or 0
+
+24 Set connection parameters
+    24 < interval min *1.25ms, 2 bytes > < interval max *1.25ms, 2 bytes > < slave latency, 2 bytes > < timeout *10ms, 2 bytes >
+    Return: 
+
+25 Get connection parameters
+    25
+    Return: < connection interval * 1.25ms, 2 bytes >< slave latency, 2 bytes >< timeout * 10ms, 2 bytes >
+
+26 Set release on reset
+    26 
+
+    1: Default: the channel drive values are set to zero, non-braking,
+    and default "0" direction (clockwise with LEGO motors)
+
+    0: The channels are left in whatever state the controlling application
+    set them. This option itself is preserved throughout connections.
+
+27 Get release on reset
+    27
+    Return: 
+
+Quick Drive - 489a6ae0-c1ab-4c9c-bdb2-11d373c1b7fb
+--------------------------------------------------
+
+The purpose of this characteristic is to make remote contgrolling possible
+using as little bandwidth as possible. A two-channel race car can be
+controlled by sending only two bytes: one for the accelerator and one
+for steering.
+
+One can write (no response) 0-5 byte data packets to this characteristic
+to drive channels.
+
+The characteristic can be thought of as a five byte register. Each byte
+in the register conrtols one channel. With the 0x0A "Quick Drive Setup"
+command, one can configure which byte controls which channel. The default
+is that byte 0 controls channel 0, byte 1 conrtols channel 1, and so on.
+
+Quick Drive is the recommended way to control models where low latency
+is expected, and there might be dozens of models in the same area.
+
+Since each channel is driven with one byte, the direction and the PWM
+information must be fitted into that single byte. This is done in the
+following way:
+
+Example: "Drive forward (clockwise) 255"
+
+  1  1  1  1  1  1  1  0 

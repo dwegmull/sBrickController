@@ -5,25 +5,146 @@
 //================================================================================
 // Switches
 #define SWITCH_WAKEUP 0
-#define SWITCH_DIR_LX 30
-#define SWITCH_DIR_LY 29
-#define SWITCH_DIR_RX 28
-#define SWITCH_DIR_RY 25
+#define SWITCH_DIR_RX 30
+#define SWITCH_DIR_RY 29
+#define SWITCH_DIR_LX 16
+#define SWITCH_DIR_LY 12
 // Analogue inputs
-#define ADC_V_BATT 1
-#define ADC_LX 2
-#define ADC_LY 3
-#define ADC_RX 4
-#define ADC_RY 5
+#define ADC_LX 1
+#define ADC_LY 2
+#define ADC_RX 5
+#define ADC_RY 6
 // LED
 #define LED_PIN 6
 // Keep alive
 #define SYS_ON 8
 
+// Power for the potentiometers
+#define POT_POWER 19
 
-DIM rc,at$,conHndl,uHndl,atHndl
-DIM pwm
+#define HYST 10
+#define TIMEOUT 1
+#define DEADBAND 20
+
+DIM rc,conHndl,uHndl,atHndl
+DIM timeoutCnt
 DIM connected 
+DIM mins[4]
+DIM maxs[4]
+DIM prevs[4]
+DIM dirs[4]
+DIM invert[4]
+DIM ctrl$
+
+//==============================================================================
+// Initialise the variables used for processing the axes
+//==============================================================================
+FUNCTION initVar()
+    DIM i
+    FOR i = 0 to 3
+        mins[i] = 200
+        maxs[i] = 800
+        prevs[i] = 128
+        dirs[i] = 0
+        invert[i] = 0
+    NEXT
+    ctrl$ = "\01\00\00\00\01\00\00\02\00\00\03\00\00"
+    timeoutCnt = TIMEOUT
+ENDFUNC 0
+
+//==============================================================================
+// print the commant string in a user readable format
+//==============================================================================
+FUNCTION printString(BYVAL string$)
+    dim i, j
+    for i = 0 to 3
+        print "Ch ";i;": d=";STRGETCHR(string$,2+(3*i));" a=";STRGETCHR(string$,3+(3*i));" "
+    next
+ENDFUNC 0
+
+//==============================================================================
+// Check for a change of direction since last sample
+// Returns 1, if the direction changed, 0 otherwise
+//==============================================================================
+FUNCTION checkChangeDirection(BYVAL value, BYVAL offset)
+    if dirs[offset] == 1 then
+        if (value - prevs[offset]) > 0 then
+            EXITFUNC 0
+        else
+            dirs[offset] = 0
+            EXITFUNC 1
+        endif
+    else
+        if (prevs[offset] - value) > 0 then
+            EXITFUNC 0
+        else
+            dirs[offset] = 1
+            EXITFUNC 1
+        endif
+    endif
+ENDFUNC 0
+
+//==============================================================================
+// Add an axle to the report string
+//==============================================================================
+FUNCTION addAxle2Buffer(BYVAL value, BYVAL offset)
+    dim dir
+    // Convert 9 bit number into 8 bi amplitude + 1 bit direction
+    if value > 255 then
+        dir = 1
+        value = value - 256
+    else
+        dir = 0
+        value = 255 - value
+    endif
+    if value < DEADBAND then
+        value = 0
+    endif
+    // Insert the directiion in the string
+    dir = strsetchr(ctrl$, dir, (3 * offset) + 2)
+    // Insert the amplitude in the string
+    dir = strsetchr(ctrl$, value, (3 * offset) + 3)
+ENDFUNC 0
+
+//==============================================================================
+// Process one axis. Calibration, then hysteresis
+// Returns 1, if data needs to be sent, 0 otherwise
+//==============================================================================
+FUNCTION processAxis(BYVAL value, BYVAL offset)
+    dim result
+    // Adjust the limits, if needed
+    if value < mins[offset] then
+        mins[offset] = value
+    endif
+    if value > maxs[offset] then
+        maxs[offset] = value
+    endif
+    // Calibrate: result is between 0 and 511
+    result = ((value - mins[offset]) << 9) / (maxs[offset] - mins[offset])
+    
+    // Invert
+    if 1 == invert[offset] then
+        result = 511 - result 
+    endif
+    // Hysteresis
+    if result == prevs[offset] then
+        // No change in value: we're done here
+        EXITFUNC 0
+    endif
+    if 0 == checkChangeDirection(result, offset) then
+        // Same direction : report
+        prevs[offset] = result
+        result = addAxle2Buffer(result, offset)
+        EXITFUNC 1
+    else
+        // change of direction: only report if difference greater than hysteresis
+        if abs(result - prevs[offset]) > HYST then
+            // Report
+            result = addAxle2Buffer(result, offset)
+            EXITFUNC 1
+        endif
+    endif
+ENDFUNC 0
 
 //==============================================================================
 // Initialise and instantiate service, characteristic, start adverts
@@ -43,20 +164,18 @@ ENDFUNC rc
 //==============================================================================
 FUNCTION HndlrBleMsg(BYVAL nMsgId, BYVAL nCtx)
     DIM uHndA
+    DIM at$
     conHndl=nCtx
     IF nMsgID==1 THEN
         PRINT "\n\n- Disconnected"
         connected = 0
         EXITFUNC 0
     ELSEIF nMsgID==0 THEN
-        PRINT "\n- Connected, so write to attribute handle 26"
+        PRINT "\n- Connected"
         connected = 1
         atHndl = 26
         at$="\00\00"
         rc=BleGattcWrite(conHndl,atHndl,at$)
-        IF rc==0 THEN
-            WAITEVENT
-        ENDIF
     ENDIF
 ENDFUNC 1
 
@@ -65,12 +184,6 @@ ENDFUNC 1
 //==============================================================================
 function HandlerAttrWrite(cHndl,aHndl,nSts) as integer
     dim nOfst,nAhndl,at$
-    print "\nEVATTRWRITE "
-    if nSts == 0 then
-      print "\nAttribute write OK"
-    else
-        print "\nFailed to write attribute"
-    endif
 ENDFUNC 1
 
 FUNCTION HndlrConnTO()
@@ -82,24 +195,52 @@ ENDFUNC 0
 // Call back from timer 0
 //==============================================================================
 FUNCTION HandlerTimer0()
-    PRINT "\nTimer 0 has expired"
-    if pwm == 0 then
-        at$="\01\00\00\FF\01\00\FF\02\00\FF\03\00\FF\04\00\FF"
-        pwm = 1
-    else
-        at$="\01\00\00\00\01\00\00\02\00\00\03\00\00\04\00\00" 
-        pwm = 0
+    dim changeCnt
+    changeCnt = 0
+//    PRINT "\nTimer 0 has expired: "; GpioRead(ADC_LX); " "
+    changeCnt = processAxis(GpioRead(ADC_LX), 0)
+    changeCnt = changeCnt + processAxis(GpioRead(ADC_LY), 1)
+    changeCnt = changeCnt + processAxis(GpioRead(ADC_RX), 2)
+    changeCnt = changeCnt + processAxis(GpioRead(ADC_RY), 3)
+
+    timeoutCnt = timeoutCnt - 1
+//    if 0 < changeCnt then
+//        rc = printString(ctrl$)
+//        print "\n"
+//    endif
+    
+    if (changeCnt > 0) || (timeoutCnt == 0) then
+        timeoutCnt = TIMEOUT
+        atHndl = 26
+        //rc = printString(ctrl$)
+        rc=BleGattcWrite(conHndl,atHndl,ctrl$)
     endif
-    atHndl = 26
-    rc=BleGattcWrite(conHndl,atHndl,at$)
     if connected == 1 then
-        TimerStart(0,400,1)
+        TimerStart(0,10,1)
         rc = 1
-        WAITEVENT
     else
+        PRINT "\nNot connected any more "
+        timeoutCnt = TIMEOUT
         rc = 0
     endif
 ENDFUNC rc
+
+//==============================================================================
+// Button callbacks
+//==============================================================================
+FUNCTION HandleButton0()
+    invert[0] = 1 - invert[0]
+ENDFUNC 1
+FUNCTION HandleButton1()
+    invert[1] = 1 - invert[1]
+ENDFUNC 1
+FUNCTION HandleButton2()
+    invert[2] = 1 - invert[2]
+ENDFUNC 1
+FUNCTION HandleButton3()
+    invert[3] = 1 - invert[3]
+ENDFUNC 1
+
 
 //==============================================================================
 // Main() equivalent
@@ -108,6 +249,10 @@ ONEVENT  EVBLEMSG           CALL HndlrBleMsg
 OnEvent  EVATTRWRITE        call HandlerAttrWrite
 ONEVENT EVBLE_CONN_TIMEOUT CALL HndlrConnTO
 ONEVENT EVTMR0 CALL HandlerTimer0
+ONEVENT EVGPIOCHAN0 CALL HandleButton0
+ONEVENT EVGPIOCHAN1 CALL HandleButton1
+ONEVENT EVGPIOCHAN2 CALL HandleButton2
+ONEVENT EVGPIOCHAN3 CALL HandleButton3
 
 // Keep us alive
 rc = GpioSetFunc(SYS_ON,2,1)
@@ -117,30 +262,55 @@ gpiowrite(SYS_ON, 1)
 rc = GpioSetFunc(LED_PIN,2,0)
 gpiowrite(LED_PIN, 0)
 
+// POwer the potentiometers
+rc = GpioSetFunc(POT_POWER,2,0)
+gpiowrite(POT_POWER, 1)
+
 // Configure the analogue inputs
-rc = GpioSetFunc(ADC_V_BATT, 3, 0)
-rc = GpioSetFunc(ADC_LX, 3, 0)
-rc = GpioSetFunc(ADC_LY, 3, 0)
-rc = GpioSetFunc(ADC_RX, 3, 0)
-rc = GpioSetFunc(ADC_RY, 3, 0)
+//rc = GpioSetFunc(ADC_V_BATT, 3, 0)
+rc = GpioSetFunc(ADC_LX, 3, 0x11)
+rc = GpioSetFunc(ADC_LY, 3, 0x11)
+rc = GpioSetFunc(ADC_RX, 3, 0x11)
+rc = GpioSetFunc(ADC_RY, 3, 0x11)
+
+// Init the variables
+rc = initVar()
 
 // Wakeup pin (Input with pull up + wakeup from deep sleep)
 rc = GpioSetFunc(SWITCH_WAKEUP,1,0x12)
 
-// Configure the other buttons (input with pull up)
-rc = GpioSetFunc(SWITCH_DIR_LX,1,2)
-rc = GpioSetFunc(SWITCH_DIR_LY,1,2)
-rc = GpioSetFunc(SWITCH_DIR_RX,1,2)
-rc = GpioSetFunc(SWITCH_DIR_RY,1,2)
+// Configure the other buttons (input with pull down)
+rc = GpioSetFunc(SWITCH_DIR_LX,1,1)
+rc = GpioSetFunc(SWITCH_DIR_LY,1,1)
+rc = GpioSetFunc(SWITCH_DIR_RX,1,1)
+rc = GpioSetFunc(SWITCH_DIR_RY,1,1)
+
+// Enable events on the buttons
+rc = GpioBindEvent(0, SWITCH_DIR_LX, 0)
+rc = GpioBindEvent(1, SWITCH_DIR_LY, 0)
+rc = GpioBindEvent(2, SWITCH_DIR_RX, 0)
+rc = GpioBindEvent(3, SWITCH_DIR_RY, 0)
+
 
 // Init global variables
-pwm = 0
 connected = 1
 IF OnStartup()==0 THEN
     PRINT "\nGatt Client is open\n"
 ELSE
     PRINT "\nFailure OnStartup"
 ENDIF
-TimerStart(0,500,1)
-WAITEVENT
+DO
+    TimerStart(0,200,1)
+    print "\n before 3"
+    WAITEVENT
+    print "\n after 3"
+    if connected == 0 then
+        IF OnStartup()==0 THEN
+            PRINT "\nGatt Client is open\n"
+        ELSE
+            PRINT "\nFailure OnStartup"
+        ENDIF
+    endif
+DOWHILE 1 == 1
 PRINT "\nExiting..."
+
